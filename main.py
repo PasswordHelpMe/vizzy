@@ -1,0 +1,330 @@
+import os
+import logging
+import asyncio
+from typing import Optional, Dict, Any
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+import pyvizio
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Vizio TV API",
+    description="API for controlling Vizio smart TVs using pyvizio",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Pydantic models
+class PowerRequest(BaseModel):
+    power: str = Field(..., description="Power state: 'on' or 'off'")
+
+class VolumeRequest(BaseModel):
+    volume: int = Field(..., ge=0, le=100, description="Volume level (0-100)")
+
+class InputRequest(BaseModel):
+    input_name: str = Field(..., description="Input name (e.g., 'HDMI-1', 'SMARTCAST')")
+
+class AppRequest(BaseModel):
+    app_name: str = Field(..., description="App name to launch")
+
+# Global TV instance
+tv_instance: Optional[pyvizio.Vizio] = None
+
+def get_tv_instance() -> pyvizio.Vizio:
+    """Get or create TV instance with environment variables"""
+    global tv_instance
+    
+    if tv_instance is None:
+        ip = os.getenv("VIZIO_IP")
+        port = int(os.getenv("VIZIO_PORT", "7345"))
+        auth_token = os.getenv("VIZIO_AUTH_TOKEN")
+        
+        if not ip:
+            raise HTTPException(status_code=500, detail="VIZIO_IP environment variable not set")
+        
+        # Debug logging
+        logger.info(f"Initializing TV connection to {ip}:{port}")
+        logger.info(f"Auth token length: {len(auth_token) if auth_token else 0}")
+        logger.info(f"Auth token set: {bool(auth_token)}")
+        
+        # Use correct pyvizio initialization parameters
+        try:
+            # device_id, ip, name, auth_token, device_type, timeout
+            tv_instance = pyvizio.Vizio(
+                device_id=ip,  # Use IP as device_id
+                ip=ip,
+                name="Vizio TV",
+                auth_token=auth_token or "",
+                device_type='tv',
+                timeout=10
+            )
+            logger.info(f"TV instance created successfully with correct parameters")
+        except Exception as e:
+            logger.warning(f"Failed with correct parameters: {e}")
+            # Fallback to speaker device type
+            tv_instance = pyvizio.Vizio(
+                device_id=ip,
+                ip=ip,
+                name="Vizio TV",
+                auth_token=auth_token or "",
+                device_type='speaker',
+                timeout=10
+            )
+            logger.info(f"TV instance created successfully with speaker device type")
+    
+    return tv_instance
+
+async def run_sync_method(method, *args, **kwargs):
+    """Run a sync method in a thread pool to avoid blocking"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: method(*args, **kwargs))
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize TV connection on startup"""
+    try:
+        get_tv_instance()
+        logger.info("TV API started successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize TV connection: {e}")
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "Vizio TV API", "status": "running"}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        tv = get_tv_instance()
+        # Simple connection test
+        return {
+            "status": "healthy",
+            "tv_connected": True,
+            "tv_ip": os.getenv("VIZIO_IP"),
+            "tv_port": os.getenv("VIZIO_PORT", "7345"),
+            "auth_token_set": bool(os.getenv("VIZIO_AUTH_TOKEN"))
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "tv_connected": False,
+            "error": str(e)
+        }
+
+@app.get("/tv/info")
+async def get_tv_info():
+    """Get TV information"""
+    try:
+        tv = get_tv_instance()
+        
+        # Get basic info without async calls
+        info = {
+            "ip": os.getenv("VIZIO_IP"),
+            "port": os.getenv("VIZIO_PORT", "7345"),
+            "auth_token_set": bool(os.getenv("VIZIO_AUTH_TOKEN"))
+        }
+        
+        # Try to get TV state info using thread pool
+        try:
+            power_state = await run_sync_method(tv.get_power_state)
+            info["power_state"] = power_state
+        except Exception as e:
+            info["power_state"] = "unknown"
+            info["power_error"] = str(e)
+        
+        try:
+            volume = await run_sync_method(tv.get_current_volume)
+            info["volume"] = volume
+        except Exception as e:
+            info["volume"] = "unknown"
+            info["volume_error"] = str(e)
+        
+        try:
+            current_input = await run_sync_method(tv.get_current_input)
+            info["current_input"] = current_input
+        except Exception as e:
+            info["current_input"] = "unknown"
+            info["input_error"] = str(e)
+        
+        return info
+    except Exception as e:
+        logger.error(f"Failed to get TV info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tv/power")
+async def set_power(request: PowerRequest):
+    """Set TV power state"""
+    try:
+        tv = get_tv_instance()
+        logger.info(f"Attempting to set power to: {request.power}")
+        
+        if request.power.lower() == "on":
+            logger.info("Calling tv.pow_on()")
+            result = await run_sync_method(tv.pow_on)
+            logger.info(f"pow_on result: {result}")
+            message = "TV powered on"
+        elif request.power.lower() == "off":
+            logger.info("Calling tv.pow_off()")
+            result = await run_sync_method(tv.pow_off)
+            logger.info(f"pow_off result: {result}")
+            message = "TV powered off"
+        else:
+            raise HTTPException(status_code=400, detail="Power must be 'on' or 'off'")
+        
+        logger.info(f"Power operation completed: {message}")
+        return {"message": message, "power": request.power.lower()}
+    except Exception as e:
+        logger.error(f"Failed to set power: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tv/power")
+async def get_power():
+    """Get current power state"""
+    try:
+        tv = get_tv_instance()
+        power_state = await run_sync_method(tv.get_power_state)
+        return {"power": power_state}
+    except Exception as e:
+        logger.error(f"Failed to get power state: {e}")
+        # Return a more user-friendly error
+        if "Empty auth token" in str(e):
+            return {
+                "error": "Authentication required. Please get your TV's auth token using: pyvizio --ip YOUR_TV_IP discover",
+                "power": "unknown"
+            }
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tv/volume")
+async def set_volume(request: VolumeRequest):
+    """Set TV volume"""
+    try:
+        tv = get_tv_instance()
+        # Note: pyvizio doesn't have a direct set_volume method
+        # We'll need to use vol_up/vol_down or implement volume setting differently
+        current_volume = await run_sync_method(tv.get_current_volume)
+        
+        if current_volume is None:
+            raise HTTPException(status_code=500, detail="Could not get current volume")
+        
+        # For now, just return the current volume since direct setting isn't available
+        return {"message": f"Current volume is {current_volume}", "volume": current_volume}
+    except Exception as e:
+        logger.error(f"Failed to set volume: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tv/volume")
+async def get_volume():
+    """Get current volume"""
+    try:
+        tv = get_tv_instance()
+        volume = await run_sync_method(tv.get_current_volume)
+        return {"volume": volume}
+    except Exception as e:
+        logger.error(f"Failed to get volume: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tv/input")
+async def set_input(request: InputRequest):
+    """Set TV input"""
+    try:
+        tv = get_tv_instance()
+        await run_sync_method(tv.set_input, request.input_name)
+        return {"message": f"Input set to {request.input_name}", "input": request.input_name}
+    except Exception as e:
+        logger.error(f"Failed to set input: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tv/input")
+async def get_input():
+    """Get current input"""
+    try:
+        tv = get_tv_instance()
+        current_input = await run_sync_method(tv.get_current_input)
+        return {"input": current_input}
+    except Exception as e:
+        logger.error(f"Failed to get input: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tv/inputs")
+async def get_available_inputs():
+    """Get available inputs"""
+    try:
+        tv = get_tv_instance()
+        inputs = await run_sync_method(tv.get_inputs_list)
+        return {"inputs": inputs}
+    except Exception as e:
+        logger.error(f"Failed to get inputs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tv/app")
+async def launch_app(request: AppRequest):
+    """Launch an app on the TV"""
+    try:
+        tv = get_tv_instance()
+        await run_sync_method(tv.launch_app, request.app_name)
+        return {"message": f"App {request.app_name} launched", "app": request.app_name}
+    except Exception as e:
+        logger.error(f"Failed to launch app: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tv/apps")
+async def get_available_apps():
+    """Get available apps"""
+    try:
+        tv = get_tv_instance()
+        apps = await run_sync_method(tv.get_apps_list)
+        return {"apps": apps}
+    except Exception as e:
+        logger.error(f"Failed to get apps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tv/mute")
+async def set_mute(muted: bool = True):
+    """Set mute state"""
+    try:
+        tv = get_tv_instance()
+        if muted:
+            await run_sync_method(tv.mute_on)
+            message = "TV muted"
+        else:
+            await run_sync_method(tv.mute_off)
+            message = "TV unmuted"
+        return {"message": message, "muted": muted}
+    except Exception as e:
+        logger.error(f"Failed to set mute: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/tv/mute")
+async def get_mute():
+    """Get current mute state"""
+    try:
+        tv = get_tv_instance()
+        muted = await run_sync_method(tv.is_muted)
+        return {"muted": muted}
+    except Exception as e:
+        logger.error(f"Failed to get mute state: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

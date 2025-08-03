@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  vizio-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - VIZIO_IP=${VIZIO_IP}
+      - VIZIO_PORT=${VIZIO_PORT:-7345}
+      - VIZIO_AUTH_TOKEN=${VIZIO_AUTH_TOKEN}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s 
