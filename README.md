@@ -6,6 +6,7 @@ A FastAPI-based REST API for controlling Vizio SmartCast TVs using the pyvizio l
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104.1-green.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docker Hub](https://img.shields.io/badge/Docker%20Hub-Available-blue.svg)](https://hub.docker.com/)
 
 This API provides endpoints to control power, volume, inputs, apps, and more.
 
@@ -99,6 +100,26 @@ docker-compose up --build
 docker build -t vizio-api .
 docker run -p 8000:8000 --env-file .env vizio-api
 ```
+
+### Docker Hub (Recommended)
+
+Pull and run the pre-built multi-architecture image:
+
+```bash
+# Pull the image (works on x86_64, ARM64, and ARM v7)
+docker pull YOUR_DOCKERHUB_USERNAME/vizio-api:latest
+
+# Run with environment variables
+docker run -p 8000:8000 \
+  -e VIZIO_IP=192.168.1.100 \
+  -e VIZIO_PORT=7345 \
+  -e VIZIO_AUTH_TOKEN=your_token \
+  YOUR_DOCKERHUB_USERNAME/vizio-api:latest
+```
+
+> **Note**: Replace `YOUR_DOCKERHUB_USERNAME` with your actual Docker Hub username after publishing.
+> 
+> **Multi-Architecture Support**: The Docker image supports `linux/amd64`, `linux/arm64`, and `linux/arm/v7` architectures.
 
 ## API Endpoints
 
