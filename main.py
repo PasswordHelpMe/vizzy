@@ -133,40 +133,69 @@ async def health_check():
 
 @app.get("/tv/info")
 async def get_tv_info():
-    """Get TV information"""
+    """Get comprehensive TV information with interpreted power state"""
     try:
         tv = get_tv_instance()
         
-        # Get basic info without async calls
+        # Base info
         info = {
             "ip": os.getenv("VIZIO_IP"),
             "port": os.getenv("VIZIO_PORT", "7345"),
             "auth_token_set": bool(os.getenv("VIZIO_AUTH_TOKEN"))
         }
         
-        # Try to get TV state info using thread pool
+        # Get power state and interpret it
         try:
-            power_state = await run_sync_method(tv.get_power_state)
-            info["power_state"] = power_state
+            power_mode_raw = await run_sync_method(tv.get_power_state)
+            
+            # Interpret power mode values based on Vizio API
+            if power_mode_raw == 0:
+                power_status = "Off"
+            elif power_mode_raw == 1:
+                power_status = "On"
+            elif power_mode_raw == 2:
+                power_status = "Standby"
+            else:
+                power_status = "Unknown"
+            
+            info["power"] = power_status
+            info["power_mode"] = power_mode_raw
+            
         except Exception as e:
-            info["power_state"] = "unknown"
+            logger.error(f"Failed to get power state: {e}")
+            info["power"] = "Unknown"
+            info["power_mode"] = None
             info["power_error"] = str(e)
         
+        # Get volume
         try:
             volume = await run_sync_method(tv.get_current_volume)
-            info["volume"] = volume
+            info["volume"] = volume if volume is not None else 0
         except Exception as e:
-            info["volume"] = "unknown"
+            logger.error(f"Failed to get volume: {e}")
+            info["volume"] = 0
             info["volume_error"] = str(e)
         
+        # Get current input
         try:
             current_input = await run_sync_method(tv.get_current_input)
-            info["current_input"] = current_input
+            info["input"] = current_input if current_input else "Unknown"
         except Exception as e:
-            info["current_input"] = "unknown"
+            logger.error(f"Failed to get input: {e}")
+            info["input"] = "Unknown"
             info["input_error"] = str(e)
         
+        # Get mute status
+        try:
+            muted = await run_sync_method(tv.is_muted)
+            info["muted"] = bool(muted) if muted is not None else False
+        except Exception as e:
+            logger.error(f"Failed to get mute state: {e}")
+            info["muted"] = False
+            info["mute_error"] = str(e)
+        
         return info
+        
     except Exception as e:
         logger.error(f"Failed to get TV info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
